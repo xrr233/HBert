@@ -1,0 +1,9 @@
+  File "/root/miniconda3/lib/python3.6/multiprocessing/util.py", line 262, in _run_finalizers
+    finalizer()
+  File "/root/miniconda3/lib/python3.6/multiprocessing/util.py", line 186, in __call__
+    res = self._callback(*self._args, **self._kwargs)
+  File "/root/miniconda3/lib/python3.6/shutil.py", line 484, in rmtree
+    onerror(os.rmdir, path, sys.exc_info())
+  File "/root/miniconda3/lib/python3.6/shutil.py", line 482, in rmtree
+    os.rmdir(path)
+OSError: [Errno 39] Directory not empty: '/tmp/pymp-nhqech_h'
