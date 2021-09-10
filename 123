@@ -1,1 +1,20 @@
-111
+2021.09.10
+1.训练同样数据下的Bert-base，MRR@10为0.343，比FraBert差半个点(0.348)。
+2.PCM任务调整，Loss下降速度有所好转，MRR@10提升0.2个点。
+3.正在将passage ranking 任务转移到 document ranking。
+4.Baseline复现，PROB，ICT，WLP等任务。
+5.MS-marco HTML文本提取，速度较慢，且有很多失效url。
+-----------------------
+1. 完成论文 related work 部分。
+2. 构造数据集与COIL对齐。
+3. TFIDF-based模型调优（目前ckpt MRR@10为0.354）。
+4. sentence_level模型修改与测试（目前ckpt MRR@10为0.330）。
+
+2021.09.03
+1.PCM任务调整，尝试将PCM任务的负例改为同一训练数据中的其他语句，Loss下降仍过快，MRR@10无明显变化。将PCM任务调整为预测原始向量，MRR@10无明显变化。
+2.Bert-Base 对齐，使用自己的数据重新训练Bert-Base，一个epoch，模型已训练完成，正在做下游任务测试。
+3.Methodology部分完成。
+-------------
+1. 完成sentence_level模型代码和训练，正在进行测试。
+2. STAR代码的复现与bug定位，目前修复后在进行验证。
+3. 论文related work部分完成50%。
