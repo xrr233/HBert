@@ -1,7 +1,22 @@
+2021.9.24
+1.Baseline:同样数据的Bert和html Encoder，在document ranking上的效果测试，基本比Bert高半个点。采用直接阶段方案的html Encoder和取子节点的html encoder效果上差不多。
+2.实验：HBert在fullrank上基本与PROP持平，rerank上高PROP一个点
+3.正在加入调换节点顺序并恢复的任务。
+4.论文experiment部分撰写，剩余实验结果等待填空。
+---------------------------
+1. 论文methodologies部分30%。
+2. token level 模型TREC DL 19 NDCG@10:0.729。
+3. sentence level 模型调优，MRR@10: 0.357（但相同训练方式下横向对比并无优势。）
+4. 基于之前实验的论文&实验思路，论文路线重新整理：query侧加速，passage侧减存。
 
-会议主题 : 郭宇的会议
-时间 : 2021-09-18 12:29-13:29 (UTC+08:00)Beijing
-Join (Host) : http://imeeting.huawei.com/meeting/startzoom?id=15cb85bedda04300a720c283ecc50d73&app=welink
-Join (Internal) : http://imeeting.huawei.com/meeting/joinzoom?id=0148685870&app=welink
-Join (External) : https://welink.zhumu.com/j/148685870
-会议ID : 0148685870    (会议ID在本次会议结束后不可继续使用)
+2021.09.17
+1.BaseLine。Neural model包括DRMM、DUET、KNRM、Conv-KNRM，Pretrained model包括ICT，PROP实验完成
+2.HBert参数设置上，Node encoder层数k=1,2,3以及是否共享参数训练完成，正在进行下游任务测试，预计今天出结果。
+3.HBert Task，父子节点预测任务以及兄弟节点预测任务分别测试，无明显提升。其次是由于省模型空间，底层text encoder的最大长度为256，在做document ranking时有明显劣势，正在尝试解决。
+4.MS-marco HTML爬取完成，后台做文本提取。
+5.论文experiment部分撰写，进度30%。
+-----------------------------
+1. 论文introduction初版。
+2. token level 模型代码修改&调优： MRR@10为0.363，方案基本固定。
+3. sentence level 模型调优，目前ckpt MRR@10为0.337，正在继续进行方案尝试。
+4. 熟悉 & 进行TREC DL 2019实验。
