@@ -10,6 +10,7 @@ from models.FraBert import FraBert
 import random
 
 
+
 class MLP(nn.Module):
     def __init__(self, hidden_size, mid_size, out_size):
         super(MLP, self).__init__()
@@ -35,49 +36,60 @@ class HirachicalBert(FraBert):
         # self.bert = FraBert(config=config)
         # self.node_cls = BertOnlyMLMHead(node_config)
         self.layer_num = layer_num
+        self.hidden_size = text_config.hidden_size
+        self.linear = nn.Linear(text_config.hidden_size, text_config.hidden_size)
         self.apply(self._init_weights)
         #self.linear = MLP(text_config.hidden_size,128,2)
 
     def get_embedding(self, output, waiting_mask, node_input_ids):
         batch_size, tag_len, node_len = waiting_mask.size()
         all_embeddings = self.bert.embeddings.word_embeddings(node_input_ids)
+        mask_embeddings = self.bert.embeddings.word_embeddings(node_input_ids)
         neg_embeddings = self.bert.embeddings.word_embeddings(node_input_ids)
         output.reverse()
         output = output[1:]
         res = torch.cat(output, dim=0)
         all_embeddings[waiting_mask.type(torch.bool)] = res
+        neg_embeddings[waiting_mask.type(torch.bool)] = res
+        mask_embeddings[waiting_mask.type(torch.bool)] = res
 
-        return all_embeddings, neg_embeddings
+        return all_embeddings, neg_embeddings, mask_embeddings
 
 
-    def get_task_embeddings(self, embeddings, negetive_embeddings, waiting_mask):
+    def get_task_embeddings(self, embeddings, negetive_embeddings, mask_embeddings,waiting_mask):
         device = embeddings.device
         batch_size, tag_len, node_len, hidden_size = embeddings.size()
         tag_labels = torch.zeros(batch_size,tag_len,node_len).to(device)
+        brother = []
         for i in range(batch_size):
             for j in range(tag_len):
                 tag = 0
                 node_num = len(torch.nonzero(waiting_mask[i,j],as_tuple=False))
-                if node_num==0:
+                if node_num==0 or node_num == 1:
                     continue
-                mask_num = max(1,int(node_num*0.15))
                 temp = list(range(2,node_num+2))
                 random.shuffle(temp)
-                for k in range(mask_num):
-                    if waiting_mask[i, j, temp[k]]:
-                        # negetive_embeddings[i][j][k] = self.sample_one_embedding(waiting_mask, negetive_embeddings, i,
-                        #                                                          j)
-                        negetive_embeddings[i][j][temp[k]] = self.bert.embeddings.word_embeddings(torch.tensor(103).to(device))
-                        tag_labels[i,j,temp[k]] = 1
+                if waiting_mask[i, j, temp[0]]:
+                    # negetive_embeddings[i][j][k] = self.sample_one_embedding(waiting_mask, negetive_embeddings, i,j)
+                    #
+                    negetive_embeddings[i][j][temp[0]] = self.sample_one_embedding(waiting_mask, negetive_embeddings, i,j)
+                    mask_embeddings[i][j][temp[0]] = self.bert.embeddings.word_embeddings(torch.tensor(103).to(device))
+                    tag_labels[i,j,temp[0]] = 1
+                if waiting_mask[i,j,temp[1]]:
+                    brother.append(embeddings[i,j,temp[1]])
+
+
+
         children_num = torch.sum(waiting_mask, dim=-1)  # (batch_size,tag_len)
         candidates_mask = children_num.gt(1)
         embeddings = embeddings[candidates_mask]
+        mask_embeddings = mask_embeddings[candidates_mask]
         negetive_embeddings = negetive_embeddings[candidates_mask]
         tag_labels = tag_labels[candidates_mask]
         candidates_len = len(embeddings)
-        train_embeddings = torch.cat((embeddings, negetive_embeddings), dim=0)
+        train_embeddings = torch.cat((embeddings, mask_embeddings), dim=0)
         # labels= torch.cat((torch.ones(candidates_len).long(), torch.zeros(candidates_len).long()), dim=0).to(device)
-        return train_embeddings, tag_labels.bool()
+        return train_embeddings, negetive_embeddings,torch.stack(brother),tag_labels.bool()
 
     # [tag_len,node_len,hidden_size]
 
@@ -85,16 +97,33 @@ class HirachicalBert(FraBert):
         batch_size, _, _ = waiting_mask.size()
         temp = list(range(batch_size))
         random.shuffle(temp)
-        sample_batch = waiting_mask[i].clone().detach()
-        sample_batch[j] = 0
-        candidates = torch.nonzero(sample_batch, as_tuple=False)
-        random.shuffle(candidates)
-        # if len(candidates):
-        sample_index = candidates[0]
-        return embeddings[i, sample_index[0], sample_index[1]]
+        for x in temp:
+            if x == i :
+                continue
+            else:
+                sample_batch = waiting_mask[x].clone().detach()
+                candidates = torch.nonzero(sample_batch, as_tuple=False)
+                random.shuffle(candidates)
+                # if len(candidates):
+                sample_index = candidates[0]
+                return embeddings[x, sample_index[0], sample_index[1]]
+        # sample_batch = waiting_mask[i].clone().detach()
+        # sample_batch[j] = 0
+        # candidates = torch.nonzero(sample_batch, as_tuple=False)
+        # random.shuffle(candidates)
+        # # if len(candidates):
+        # sample_index = candidates[0]
+        # return embeddings[i, sample_index[0], sample_index[1]]
         # else :
         #     return 0
-
+    def masked_item_prediction(self,sequence_output,target_item):
+        sequence_output = self.linear(sequence_output)
+        sequence_output = torch.nn.functional.normalize(sequence_output,p=2,dim=1)
+        sequence_output = sequence_output.view([-1, self.hidden_size])
+        target_item = target_item.view([-1, self.hidden_size])
+        score = torch.mul(sequence_output, target_item)
+        #print(torch.sum(score, -1)[task1_labels.flatten()])
+        return torch.sum(score, -1)
     # def sample_one_embedding(self,waiting_mask,embeddings,i):
     #     batch_size,_,_ = waiting_mask.size()
     #     temp = list(range(batch_size))
@@ -137,6 +166,8 @@ class HirachicalBert(FraBert):
         # tag_logits = []
         loss_fct = CrossEntropyLoss(ignore_index=-100, reduction='mean')
         task1_loss_fct = torch.nn.CosineEmbeddingLoss(margin=0.0,size_average=None,reduction='mean')
+        pc_loss_fct = CrossEntropyLoss(reduction='mean')
+        bro_loss_fct = CrossEntropyLoss(reduction='mean')
         output = []
         batch_size, _, seq_len = token_input_ids.size()
         _, _, node_seq_len = node_input_ids.size()
@@ -235,8 +266,12 @@ class HirachicalBert(FraBert):
                     layer_output = one_layer_output
             output.append(layer_output)
 
-        all_embeddings,neg_embeddings = self.get_embedding(output,waiting_mask,node_input_ids)
-        train_embeddings,task1_labels = self.get_task_embeddings(all_embeddings,neg_embeddings,waiting_mask)
+        all_embeddings,neg_embeddings,mask_embeddings = self.get_embedding(output,waiting_mask,node_input_ids)
+        train_embeddings,negetive_embeddings,brother,task1_labels = self.get_task_embeddings(all_embeddings,neg_embeddings,mask_embeddings,waiting_mask)
+        cls_len = int(len(negetive_embeddings))
+        pc_positive = train_embeddings[:cls_len][task1_labels]
+        pc_negetive = negetive_embeddings[task1_labels]
+
 
         all_node_outputs = self.node_bert(
             input_ids=None,
@@ -248,25 +283,37 @@ class HirachicalBert(FraBert):
         )
         node_output = all_node_outputs[0]
         device = node_output.device
-        cls_len = int(len(node_output) / 2)
         positive = node_output[:cls_len]
         positive = positive[task1_labels]
-        negetive = node_output[cls_len:]
-        negetive = negetive[task1_labels]
+        mask = node_output[cls_len:]
+        pc_parent = mask[:,0,:]
+        #print(mask.size())
+        #pc_parent = mask[:,0,:]
+        bro_pos_score = self.masked_item_prediction(brother,pc_positive).view(1,-1)
+        bro_neg_score = self.masked_item_prediction(brother,pc_negetive).view(1,-1)
+        bro_scores = torch.cat((bro_pos_score, bro_neg_score), dim=0).permute(1, 0)
+        pc_pos_score = self.masked_item_prediction(pc_parent,pc_positive).view(1,-1)
+        pc_neg_score = self.masked_item_prediction(pc_parent,pc_negetive).view(1,-1)
+        pc_scores = torch.cat((pc_pos_score, pc_neg_score), dim=0).permute(1, 0)
+
+        bro_loss = bro_loss_fct(bro_scores, torch.ones(bro_pos_score.size(-1)).to(device).long())
+        pc_loss = pc_loss_fct(pc_scores, torch.ones(pc_pos_score.size(-1)).to(device).long())
+        mask = mask[task1_labels]
         #cls = node_output[:,0,:].view(-1,self.config.hidden_size)
         #cls_logits = self.linear(cls)
         # cls_score = cls_logits[:,1]
-        task1_loss = task1_loss_fct(positive,negetive,torch.ones(len(positive)).to(device))
-        if torch.isnan(task1_loss):
-            print("????????",positive,negetive)
+        task1_loss = task1_loss_fct(positive,mask,torch.ones(len(positive)).to(device))
+        # if torch.isnan(task1_loss):
+        #     print("????????",positive,negetive)
         text_mlm_loss = loss_fct(word_logits, new_token_labels.view(-1))
         # node_mlm_loss = loss_fct(tag_logits, tag_labels.view(-1))
-        print(text_mlm_loss,task1_loss.double())
+        #print(text_mlm_loss,task1_loss.double(),pc_loss)
         return {
-            'loss': text_mlm_loss+task1_loss,
+            'loss': text_mlm_loss+task1_loss+pc_loss+0*bro_loss,
             'text_mlm_loss': text_mlm_loss,
             # 'node_mlm_loss':node_mlm_loss,
             'task1_loss':task1_loss,
+            'pc_loss':pc_loss,
             'output': output
         }
 
@@ -276,14 +323,11 @@ class HirachicalBert(FraBert):
     CLS tag tag1 text1 tag2   tag3    text2 text3 
     替换为
     CLS tag tag1 text1 tag2 tag_wrong text2 text3
-
     用CLS预测是否有替换
-
     Task2:父子节点之间
-
-
     Task3:文档level
     CLS为文档表示
     CLS，本文档中任意一个句子的embedding
     CLS，同一batch中其他文档中任意一个句子的embedding
 '''
+
