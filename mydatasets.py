@@ -410,10 +410,10 @@ class BERTPretrainedPointWiseDataset(Dataset):
             ignore_verifications=False,
             cache_dir=dataset_cache_dir,
             features=datasets.Features({
-                "masked_lm_labels": [datasets.Value("string")],
+                #"masked_lm_labels": [datasets.Value("string")],
                 "masked_lm_positions": [datasets.Value("int32")],
                 "segment_ids": [datasets.Value("int32")],
-                "tokens":[datasets.Value("string")],
+                #"tokens":[datasets.Value("string")],
                 "tokens_idx":[datasets.Value("int32")],
                 "type_idx":[datasets.Value("int32")],
                 "masked_lm_labels_idxs":[datasets.Value("int32")],
@@ -443,10 +443,10 @@ class BERTPretrainedPointWiseDataset(Dataset):
         labels[masked_lm_positions] = masked_lm_labels
         token_type_ids = np.array([0]*len(data['tokens_idx']))
         data = {
-            "input_ids": list(data['tokens_idx']),
-            "token_type_ids": list(token_type_ids),
-            "inputs_type_idx":list(data['type_idx']),
-            "labels": list(labels)
+            "input_ids": list(data['tokens_idx'])[:512],
+            "token_type_ids": list(token_type_ids)[:512],
+           # "inputs_type_idx":list(data['type_idx']),
+            "labels": list(labels)[:512]
         }
 
         return BatchEncoding(data)
@@ -544,12 +544,12 @@ class PointCollator(DataCollatorWithPadding):
         # print(features)
         batch_size = len(features)
         mlm_labels = []
-        inputs_type_idx = []
+        #inputs_type_idx = []
         for i in range(batch_size):
             mlm_labels.append(features[i]['labels'])
-            inputs_type_idx.append(features[i]['inputs_type_idx'])
+            #inputs_type_idx.append(features[i]['inputs_type_idx'])
             del features[i]['labels']
-            del features[i]['inputs_type_idx']
+           # del features[i]['inputs_type_idx']
 
         # print("++++++++++++++++++++")
         #print("@@@@@@@@@@@@@@@@@@@@@@@@@@@@")
@@ -561,7 +561,7 @@ class PointCollator(DataCollatorWithPadding):
         
         for i in range(batch_size):
             mlm_labels_matrix[i][:len(mlm_labels[i])] = mlm_labels[i]
-            inputs_type_idx_matrix[i][:len(inputs_type_idx[i])]=inputs_type_idx[i]
+            #inputs_type_idx_matrix[i][:len(inputs_type_idx[i])]=inputs_type_idx[i]
         features['labels'] = torch.LongTensor(mlm_labels_matrix)
 
         #features['inputs_type_idx'] = torch.LongTensor(inputs_type_idx_matrix)
