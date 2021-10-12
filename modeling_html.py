@@ -8,6 +8,7 @@ from transformers import BertConfig, BertForMaskedLM, BertModel
 from transformers.models.bert.modeling_bert import BertOnlyMLMHead
 from models.FraBert import FraBert
 import random
+import numpy as np
 
 
 
@@ -38,6 +39,7 @@ class HirachicalBert(FraBert):
         self.layer_num = layer_num
         self.hidden_size = text_config.hidden_size
         self.linear = nn.Linear(text_config.hidden_size, text_config.hidden_size)
+        self.order_linear = nn.Linear(self.hidden_size,10)
         self.apply(self._init_weights)
         #self.linear = MLP(text_config.hidden_size,128,2)
 
@@ -58,10 +60,16 @@ class HirachicalBert(FraBert):
 
     def get_task_embeddings(self, embeddings, negetive_embeddings, mask_embeddings,waiting_mask):
         device = embeddings.device
+        reorder_embeddings = embeddings.clone()
+
         batch_size, tag_len, node_len, hidden_size = embeddings.size()
         tag_labels = torch.zeros(batch_size,tag_len,node_len).to(device)
+
         brother = []
+        order = [i for i in range(10)]
+        all_orders = []
         for i in range(batch_size):
+            #reorder_embeddings[i] = reorder_embeddings
             for j in range(tag_len):
                 tag = 0
                 node_num = len(torch.nonzero(waiting_mask[i,j],as_tuple=False))
@@ -69,10 +77,17 @@ class HirachicalBert(FraBert):
                     continue
                 temp = list(range(2,node_num+2))
                 random.shuffle(temp)
+                reorder = order
+                reorder[2:2+node_num] = temp
+                reorder_embeddings[i][j] = reorder_embeddings[i][j][reorder]
+                order_lable = np.argsort(reorder)
+                all_orders.append(order_lable)
                 if waiting_mask[i, j, temp[0]]:
                     # negetive_embeddings[i][j][k] = self.sample_one_embedding(waiting_mask, negetive_embeddings, i,j)
                     #
-                    negetive_embeddings[i][j][temp[0]] = self.sample_one_embedding(waiting_mask, negetive_embeddings, i,j)
+                    temp_embedding = self.sample_one_embedding(waiting_mask, negetive_embeddings, i,j)
+                    if temp_embedding is not None:
+                        negetive_embeddings[i][j][temp[0]] = temp_embedding
                     mask_embeddings[i][j][temp[0]] = self.bert.embeddings.word_embeddings(torch.tensor(103).to(device))
                     tag_labels[i,j,temp[0]] = 1
                 if waiting_mask[i,j,temp[1]]:
@@ -85,11 +100,12 @@ class HirachicalBert(FraBert):
         embeddings = embeddings[candidates_mask]
         mask_embeddings = mask_embeddings[candidates_mask]
         negetive_embeddings = negetive_embeddings[candidates_mask]
+        reorder_embeddings = reorder_embeddings[candidates_mask]
         tag_labels = tag_labels[candidates_mask]
         candidates_len = len(embeddings)
         train_embeddings = torch.cat((embeddings, mask_embeddings), dim=0)
         # labels= torch.cat((torch.ones(candidates_len).long(), torch.zeros(candidates_len).long()), dim=0).to(device)
-        return train_embeddings, negetive_embeddings,torch.stack(brother),tag_labels.bool()
+        return train_embeddings, negetive_embeddings,reorder_embeddings,torch.stack(brother),tag_labels.bool(),all_orders
 
     # [tag_len,node_len,hidden_size]
 
@@ -140,6 +156,7 @@ class HirachicalBert(FraBert):
 
     def forward(
             self,
+            node_texts_idx,
             node_layer_index,
             token_layer_index,
             position,
@@ -151,10 +168,10 @@ class HirachicalBert(FraBert):
             node_input_ids=None,  # (batch_size,node_num,node_len)
             inputs_type_idx=None,
             token_type_ids=None,
-            node_labels=None,  # (batch_size,node_num,node_len)
+            node_text_labels=None,  # (batch_size,node_num,node_len)
             token_labels=None,
     ):
-        node_input_ids[node_labels.ne(-100)] = node_labels[node_labels.ne(-100)]
+        #node_input_ids[node_labels.ne(-100)] = node_labels[node_labels.ne(-100)]
         # print("layer_index:"+str(layer_index.size()))
         # print("waiting_mask:"+str(waiting_mask.size()))
         # print("input_ids:"+str(input_ids.size()))
@@ -168,7 +185,9 @@ class HirachicalBert(FraBert):
         task1_loss_fct = torch.nn.CosineEmbeddingLoss(margin=0.0,size_average=None,reduction='mean')
         pc_loss_fct = CrossEntropyLoss(reduction='mean')
         bro_loss_fct = CrossEntropyLoss(reduction='mean')
+        reorder_loss_fct = torch.nn.KLDivLoss(reduction='mean')
         output = []
+        device = token_input_ids.device
         batch_size, _, seq_len = token_input_ids.size()
         _, _, node_seq_len = node_input_ids.size()
         for layer in range(self.layer_num):
@@ -267,11 +286,24 @@ class HirachicalBert(FraBert):
             output.append(layer_output)
 
         all_embeddings,neg_embeddings,mask_embeddings = self.get_embedding(output,waiting_mask,node_input_ids)
-        train_embeddings,negetive_embeddings,brother,task1_labels = self.get_task_embeddings(all_embeddings,neg_embeddings,mask_embeddings,waiting_mask)
+        train_embeddings,negetive_embeddings,reorder_embeddings,brother,task1_labels,order_labels = self.get_task_embeddings(all_embeddings,neg_embeddings,mask_embeddings,waiting_mask)
+        order_labels = torch.LongTensor(order_labels).to(device)
         cls_len = int(len(negetive_embeddings))
         pc_positive = train_embeddings[:cls_len][task1_labels]
         pc_negetive = negetive_embeddings[task1_labels]
 
+        reorder_outputs = self.node_bert(
+            input_ids=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=reorder_embeddings,
+        )
+        reorder_output = reorder_outputs[0][:,0,:]
+        reorder_logits = F.softmax(self.order_linear(reorder_output))
+        order_labels = (torch.max(order_labels,dim=0).values-order_labels).true_divide(torch.sum(order_labels,dim=0))
+        reorder_loss = reorder_loss_fct(reorder_logits,order_labels)
 
         all_node_outputs = self.node_bert(
             input_ids=None,
@@ -282,7 +314,6 @@ class HirachicalBert(FraBert):
             inputs_embeds=train_embeddings,
         )
         node_output = all_node_outputs[0]
-        device = node_output.device
         positive = node_output[:cls_len]
         positive = positive[task1_labels]
         mask = node_output[cls_len:]
@@ -309,7 +340,7 @@ class HirachicalBert(FraBert):
         # node_mlm_loss = loss_fct(tag_logits, tag_labels.view(-1))
         #print(text_mlm_loss,task1_loss.double(),pc_loss)
         return {
-            'loss': text_mlm_loss+task1_loss+pc_loss+0*bro_loss,
+            'loss': text_mlm_loss+task1_loss+pc_loss+bro_loss+reorder_loss,
             'text_mlm_loss': text_mlm_loss,
             # 'node_mlm_loss':node_mlm_loss,
             'task1_loss':task1_loss,
@@ -330,4 +361,3 @@ class HirachicalBert(FraBert):
     CLS，本文档中任意一个句子的embedding
     CLS，同一batch中其他文档中任意一个句子的embedding
 '''
-
