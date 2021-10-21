@@ -1,22 +1,16 @@
-2021.9.24
-1.Baseline:同样数据的Bert和html Encoder，在document ranking上的效果测试，基本比Bert高半个点。采用直接阶段方案的html Encoder和取子节点的html encoder效果上差不多。
-2.实验：HBert在fullrank上基本与PROP持平，rerank上高PROP一个点
-3.正在加入调换节点顺序并恢复的任务。
-4.论文experiment部分撰写，剩余实验结果等待填空。
----------------------------
-1. 论文methodologies部分30%。
-2. token level 模型TREC DL 19 NDCG@10:0.729。
-3. sentence level 模型调优，MRR@10: 0.357（但相同训练方式下横向对比并无优势。）
-4. 基于之前实验的论文&实验思路，论文路线重新整理：query侧加速，passage侧减存。
+from matplotlib import pyplot as plt
+from matplotlib import cm
+from matplotlib import axes
+#from matplotlib.font_manager import FontProperties
+import numpy as np
+import matplotlib as mpl
+MRR_10=[0.3988,0.3997,0.3999,0.4010,0.4035]
+MRR_100=[0.3939,0.3945,0.3953,0.3960,0.3985]
 
-2021.09.17
-1.BaseLine。Neural model包括DRMM、DUET、KNRM、Conv-KNRM，Pretrained model包括ICT，PROP实验完成
-2.HBert参数设置上，Node encoder层数k=1,2,3以及是否共享参数训练完成，正在进行下游任务测试，预计今天出结果。
-3.HBert Task，父子节点预测任务以及兄弟节点预测任务分别测试，无明显提升。其次是由于省模型空间，底层text encoder的最大长度为256，在做document ranking时有明显劣势，正在尝试解决。
-4.MS-marco HTML爬取完成，后台做文本提取。
-5.论文experiment部分撰写，进度30%。
------------------------------
-1. 论文introduction初版。
-2. token level 模型代码修改&调优： MRR@10为0.363，方案基本固定。
-3. sentence level 模型调优，目前ckpt MRR@10为0.337，正在继续进行方案尝试。
-4. 熟悉 & 进行TREC DL 2019实验。
+x = [20,40,60,80,100]
+plt.plot(x,MRR_10,x,MRR_100)
+plt.xticks(x)
+plt.xlabel('training steps/K')
+plt.title('The effect of training steps of WebTransformer on MS-marco official set')
+plt.legend(['MRR@100','MRR@10'],loc='upper left')
+plt.savefig('./steps.eps',dpi=600,format='eps')
