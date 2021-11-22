@@ -1,16 +1,236 @@
-from matplotlib import pyplot as plt
-from matplotlib import cm
-from matplotlib import axes
-#from matplotlib.font_manager import FontProperties
-import numpy as np
-import matplotlib as mpl
-MRR_10=[0.3988,0.3997,0.3999,0.4010,0.4035]
-MRR_100=[0.3939,0.3945,0.3953,0.3960,0.3985]
+"""
+coding=utf-8
+SHP基础版本数据
+数据版本: 5.31
+输出字段：
+    query	    每一段
+    positives	首段	不去除anchor title
+    negatives	首段
+    增加全局条件：字符长度超过20 --> text_length_filter(text, limit=20)
 
-x = [20,40,60,80,100]
-plt.plot(x,MRR_10,x,MRR_100)
-plt.xticks(x)
-plt.xlabel('training steps/K')
-plt.title('The effect of training steps of WebTransformer on MS-marco official set')
-plt.legend(['MRR@100','MRR@10'],loc='upper left')
-plt.savefig('./steps.eps',dpi=600,format='eps')
+
+生成的每个数据item，query是每一段原来的内容，
+positives和negatives都是超链接链出文本的第一段，区别在于链出文本有没有包含链回原文本的超链接（即对称超链）
+"""
+import pandas as pd
+from pgsql_util import *
+from concurrent.futures import ThreadPoolExecutor, ALL_COMPLETED, wait, ProcessPoolExecutor
+from loguru import logger
+import math
+from urllib.parse import unquote, quote
+import hashlib
+import json
+import re
+import os
+from bs4 import BeautifulSoup
+import warnings
+
+warnings.filterwarnings("ignore", category=UserWarning, module='bs4')
+
+
+def wiki_title(s):
+    if not s:
+        return ''
+    res = s[0].upper()
+    res += s[1:]
+    return res
+
+
+def get_para_head(paragraph_list):
+    # 提取首段文本
+    if paragraph_list:
+        try:
+            para_first = paragraph_list[0]
+            query = BeautifulSoup(para_first, features="html.parser").text
+        except Exception as e:
+            logger.info(f"para 解码问题 {e}")
+            query = ''
+    else:
+        query = ''
+    return query
+
+
+def get_doc_with_redirect(doc_id, pgsql):#实现重定向
+    if doc_id is None or doc_id == '':
+        return '', None
+    doc_item = pgsql.get_doc_with_docid_from_doc(doc_id)
+    if doc_item is None:
+        return '', None
+    if doc_item[0] == '':
+        redirect_id = pgsql.get_redirect_id(doc_id)
+        if redirect_id:
+            return get_doc_with_redirect(redirect_id[0], pgsql)
+        else:
+            return '', None
+    else:
+        return doc_id, doc_item
+
+
+def anchor_doc_filter(title_pattern, anchor, anchor_text, pgsql):
+    #寻找对称anchor
+    anchor_doc_title = wiki_title(unquote(anchor))
+    doc_id = hashlib.md5(anchor_doc_title.encode('utf-8')).hexdigest()
+
+    doc_id, anchor_doc_item = get_doc_with_redirect(doc_id, pgsql)
+    anchor_doc = anchor_doc_item[0] if anchor_doc_item else ''
+
+    filters = re.findall(title_pattern, anchor_doc, re.IGNORECASE)
+
+    positives_paras = []
+    negatives_para = []
+
+    para_anchor_list = list(filter(None, anchor_doc.split('\n'))) if anchor_doc else []
+
+    if filters and para_anchor_list:
+        para_head = get_para_head(para_anchor_list)
+        if text_length_filter(para_head):
+            positives_paras.append((para_head, anchor_text,))
+
+    elif para_anchor_list:
+        neg_para = get_para_head(para_anchor_list)
+        if text_length_filter(neg_para):
+            negatives_para.append((neg_para, anchor_text,))
+
+    return positives_paras, negatives_para
+
+
+def text_length_filter(text, limit=20):
+    return True if len(re.findall(r"[a-zA-Z]", text)) > limit else False
+
+
+def doc_extractor(doc_item, pgsql):
+    global output_path
+    doc = doc_item["doc"]
+    title = doc_item["title"]
+
+    title_quote = quote(title)
+    title_pattern = title + "|" + title_quote
+    all_text = BeautifulSoup(doc, features="html.parser").text
+
+    if doc:
+        paragraph_list = list(filter(None, doc.split('\n')))
+        first_passage = get_para_head(paragraph_list)
+
+        output_json = {}
+        para = paragraph_list[0]
+
+        anchor_items = re.findall(r"<a href=\"(.*?)\">(.*?)</a>", para)
+        anchors = []
+        if anchor_items:
+            for anchor_pair in anchor_items:
+                anchor = anchor_pair[0]
+                anchor_text = anchor_pair[1]
+                positives1, negatives_ = anchor_doc_filter(title_pattern, anchor, anchor_text, pgsql)
+                if positives1:
+                    for pos_para in positives1:
+                        if pos_para[0] not in output_json["positives"]:
+                            output_json["positives"].append(pos_para)
+
+                if negatives_:
+                    for neg_para in negatives_:
+                        if neg_para[0] not in output_json["negatives"]:
+                            output_json["negatives"].append(neg_para)
+
+        if output_json.get("query") and output_json.get("positives"):
+            with open(output_path, "a+") as f1:
+                f1.write(json.dumps(output_json) + "\n")
+
+
+def doc_extractor(doc_item, pgsql):
+    global output_path
+    doc = doc_item["doc"]
+    title = doc_item["title"]
+
+    title_quote = quote(title)
+    title_pattern = title + "|" + title_quote
+
+    if doc:
+        paragraph_list = list(filter(None, doc.split('\n')))
+        if paragraph_list:
+            for para in paragraph_list:
+                output_json = {}
+                try:
+                    output_json["query"] = BeautifulSoup(para, features="html.parser").text
+                    if not text_length_filter(output_json["query"]):
+                        continue
+                except Exception as e:
+                    logger.info(f"提取para文本失败:{e}, {para}")
+                    continue
+
+                output_json["positives"] = []
+                output_json["negatives"] = []
+
+                anchor_items = re.findall(r"<a href=\"(.*?)\">(.*?)</a>", para)
+                if anchor_items:
+                    for anchor_pair in anchor_items:
+                        anchor = anchor_pair[0]
+                        anchor_text = anchor_pair[1]
+                        positives1, negatives_ = anchor_doc_filter(title_pattern, anchor, anchor_text, pgsql)
+                        if positives1:
+                            for pos_para in positives1:
+                                if pos_para[0] not in output_json["positives"]:
+                                    output_json["positives"].append(pos_para)
+
+                        if negatives_:
+                            for neg_para in negatives_:
+                                if neg_para[0] not in output_json["negatives"]:
+                                    output_json["negatives"].append(neg_para)
+
+                if output_json.get("query") and output_json.get("positives"):
+                    with open(output_path, "a+") as f1:
+                        f1.write(json.dumps(output_json) + "\n")
+
+
+def func_process(loop, chunkSize, total):
+    complete_count = chunkSize * loop
+    loop_cnt = math.ceil(total / chunkSize)
+
+    qry = f"SELECT title, doc FROM doc_row where row_id BETWEEN {chunkSize * loop} and {chunkSize * (loop + 1) - 1}"
+
+    # pgsql数据库连接
+    pgsql = create_pgsql()
+    conn = pgsql.con_pgsql()
+
+    # 读取数据
+    df = pd.read_sql(qry, con=conn)
+    logger.info(f"开始第{loop}/{loop_cnt}轮更新，已更新{complete_count}/{total},本轮读取数据数量：{df.shape[0]}")
+    global ThreadMaxWorkers
+    doc_data = [item[1] for item in df.iterrows()]
+    with ThreadPoolExecutor(max_workers=ThreadMaxWorkers) as t_executor:
+        t_tasks = [t_executor.submit(doc_extractor, doc_item, pgsql) for doc_item in doc_data]
+    wait(t_tasks, return_when=ALL_COMPLETED)
+
+    complete_count += chunkSize
+    logger.info(f"{loop}/{loop_cnt}已完成更新数量：{complete_count}")
+
+    # 关闭连接
+    conn.close()
+
+
+def main(chunkSize, total):
+    loop_cnt = math.ceil(total / chunkSize)
+    logger.add("./log/pos_neg_anchors_{time}.log", format="{time} {level} {message}")
+    logger.info(f"任务开始,需更新共计{total}/15492285，需要 {loop_cnt} 次迭代 >>>")
+    global processMaxWorkers
+    with ProcessPoolExecutor(max_workers=processMaxWorkers) as p_executor:
+        p_tasks = [p_executor.submit(func_process, i, chunkSize, total) for i in range(loop_cnt)]
+    wait(p_tasks, return_when=ALL_COMPLETED)
+
+
+if __name__ == '__main__':
+    chunk_size = 50120
+    # 总数为：15492285
+    total_count = 15492285
+
+    # 进程、线程数限定
+    processMaxWorkers = 12
+    ThreadMaxWorkers = 1000
+
+    # 输出文件路径
+    output_path = "weak_shp_1122.txt"
+
+    if os.path.exists(output_path):
+        os.remove(output_path)
+    else:
+        main(chunk_size, total_count)
+        logger.info("任务完成")
