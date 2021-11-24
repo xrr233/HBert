@@ -11,6 +11,7 @@ from multiprocessing import Process
 import numpy as np
 
 
+
 class Worker():
     def __init__(self, src_fp, tgt_fp, func):
         self.src_fp = src_fp
@@ -48,6 +49,28 @@ class MultiProcessor():
         for pid in range(self.pid_num):
             p.join()
 
+def find_anchor_sentence(pos,passage):
+    sentences = sent_tokenize(passage)
+    sentence_pos = [0]
+    cur = 0
+
+    for sentence in sentences:
+        cur += len(sentence)
+        sentence_pos.append(cur)
+        cur+=1
+    res = ""
+    for i in range(len(sentences)):
+        if pos[0]>=sentence_pos[i] and pos[1]<=sentence_pos[i+1]:
+            res = sentences[i]
+        elif pos[0]>=sentence_pos[i] and pos[1]>sentence_pos[i+1]:
+            j = i+1
+            res = sentences[i]
+            while(j<len(sentences) and pos[1]>sentence_pos[j]):
+                res = res+' '+sentences[j]
+                j+=1
+        return res,[pos[0]-sentence_pos[i],pos[1]-sentence_pos[i]]
+            
+            
 def get_anchor_attention(anchor_offset,offsets,attentions):
     left = 0
     right = 0
