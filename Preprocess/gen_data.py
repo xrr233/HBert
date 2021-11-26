@@ -62,6 +62,75 @@ def get_position(x):
         out.append(res[i])
     return out
 
+def truncate_seq_pair(tokens_a, tokens_b, max_num_tokens):
+	"""Truncates a pair of sequences to a maximum sequence length. Lifted from Google's BERT repo."""
+	while True:
+		total_length = len(tokens_a) + len(tokens_b)
+		if total_length <= max_num_tokens:
+			break
+		# truncate from the doc side
+		tokens_b.pop()
+def construct_pointwise_data(examples,chunk_indexs,max_seq_len,bert_tokenizer,masked_lm_prob,
+            max_predictions_per_seq,bert_vocab_list,epoch_filename,resps_list):
+	with open(epoch_filename,'w')as g:
+		num_examples = len(examples)
+		print("num_examples", num_examples)
+		num_instance = 0
+		num_instances_value = 0
+		for doc_idx in tqdm(chunk_indexs):
+		# print(doc_idx)
+			if doc_idx % 100 == 0:
+				print(doc_idx)
+			example = examples[doc_idx]
+
+			instances = [] 
+			post_tokens = example['post']
+			resp_tokens = example['response']
+			neg_resp_tokens = select_neg_resps(resps_list,post_tokens,resp_tokens)
+
+			pos_post = copy.deepcopy(post_tokens)[:250]
+			pos_resp = copy.deepcopy(resp_tokens)[:250]
+			neg_post = copy.deepcopy(post_tokens)[:250]
+			neg_resp = copy.deepcopy(neg_resp_tokens)[:250]
+			try:
+				truncate_seq_pair(pos_post, pos_resp, max_seq_len - 3)
+				truncate_seq_pair(neg_post, neg_resp, max_seq_len - 3)
+			except:
+				break
+
+			pos_tokens = ["[CLS]"] + pos_post + ["[SEP]"] + pos_resp + ["[SEP]"]
+			pos_segment_ids = [0 for _ in range(len(pos_post) + 2)] + [1 for _ in range(len(pos_resp) + 1)]
+			neg_tokens = ["[CLS]"] + neg_post + ["[SEP]"] + neg_resp + ["[SEP]"]
+			neg_segment_ids = [0 for _ in range(len(neg_post) + 2)] + [1 for _ in range(len(neg_resp) + 1)]
+			pos_tokens, pos_masked_lm_positions, pos_masked_lm_labels = create_masked_lm_predictions(
+				pos_tokens, masked_lm_prob, max_predictions_per_seq, True, bert_vocab_list)
+			neg_tokens, neg_masked_lm_positions, neg_masked_lm_labels = create_masked_lm_predictions(
+				neg_tokens, masked_lm_prob, max_predictions_per_seq, True, bert_vocab_list)
+			pos_tokens_idx = bert_tokenizer.convert_tokens_to_ids(pos_tokens)
+			pos_tokens_idx_labels = bert_tokenizer.convert_tokens_to_ids(pos_masked_lm_labels)
+			neg_tokens_idx = bert_tokenizer.convert_tokens_to_ids(neg_tokens)
+			neg_tokens_idx_labels = bert_tokenizer.convert_tokens_to_ids(neg_masked_lm_labels)
+			pos_instance = {
+				"tokens_idx":pos_tokens_idx,
+				"tokens":pos_tokens,
+				"segment_ids": pos_segment_ids,
+				"label": 1,
+				"masked_lm_positions": pos_masked_lm_positions,
+				"masked_lm_labels_idxs": pos_tokens_idx_labels,
+				}
+			neg_instance = {
+				"tokens_idx":neg_tokens_idx,
+				"tokens":neg_tokens,
+				"segment_ids": neg_segment_ids,
+				"label": 0,
+				"masked_lm_positions": neg_masked_lm_positions,
+				"masked_lm_labels_idxs": neg_tokens_idx_labels,
+				}
+			g.write(json.dumps(pos_instance, ensure_ascii=False)+'\n')
+			g.write(json.dumps(neg_instance, ensure_ascii=False)+'\n')
+			num_instances_value += 1
+
+	return num_instances_value
 def pad_positions(positions,max_num):
     for i in range(len(positions)):
         positions[i] = positions[i]+[0]*(max_num-len(positions[i]))
